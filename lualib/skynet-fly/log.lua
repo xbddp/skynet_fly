@@ -1,11 +1,10 @@
 local skynet = require "skynet"
 local table_util = require "skynet-fly.utils.table_util"
-local module_info = require "skynet-fly.etc.module_info"
 local sformat = string.format
 local sdump = table_util.dump
 local serror = skynet.error
 local debug_getinfo = debug.getinfo
-local SERVICE_NAME = SERVICE_NAME
+local LOG_SERVICE_NAME = LOG_SERVICE_NAME
 local pairs = pairs
 local assert = assert
 local tostring = tostring
@@ -16,8 +15,8 @@ local schar = string.char
 local tpack = table.pack
 
 local M = {
+	DEBUG = -1,
 	INFO = 0,
-	DEBUG = 1,
 	WARN = 2,
 	ERROR = 3,
 	FATAL = 4,
@@ -27,8 +26,8 @@ local M = {
 }
 
 local level_map = {
-	['info'] = M.INFO,
 	['debug'] = M.DEBUG,
+	['info'] = M.INFO,
 	['warn'] = M.WARN,
 	['error'] = M.ERROR,
 	['fatal'] = M.FATAL,
@@ -63,20 +62,12 @@ local function create_log_func(level_name,is_format)
 			end
 		end
 
-		local server_name = nil
-		local base_info = module_info.get_base_info()
-		if base_info.module_name then
-			server_name = base_info.module_name
-		else
-			server_name = SERVICE_NAME
-		end
-
-		serror(sformat("[%s][%s][%s]%s",level_name,server_name,lineinfo,log_str))
+		serror(sformat("[%s][%s][%s]%s", level_name, LOG_SERVICE_NAME, lineinfo, log_str))
 
 		local log_hook = hooks[level]
 		local len = #log_hook
 		for i = 1, len do
-			local func = log_hook[len]
+			local func = log_hook[i]
 			func(log_str)
 		end
 	end
