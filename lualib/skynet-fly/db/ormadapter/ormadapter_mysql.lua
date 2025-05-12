@@ -104,11 +104,12 @@ local M = {}
 local mata = {__index = M}
 
 ---#desc 新建适配器对象
----@param db_name string 对应share_config_m 中写的key为mysql表的名为db_name的连接配置
+---@param db_name? string 对应share_config_m 中写的key为mysql表的名为db_name的连接配置
+---@param db? table 可选自己传入连接对象
 ---@return table obj
-function M:new(db_name)
+function M:new(db_name, db)
     local t = {
-        _db = mysqli.new_client(db_name),
+        _db = db or mysqli.new_client(db_name),
         _tab_name = nil,
         _field_list = nil,
         _field_map = nil,
@@ -166,6 +167,8 @@ local function create_table(t)
     local field_list = t._field_list
     local field_map = t._field_map
     local key_list = t._key_list
+    local indexs_list = t._indexs_list
+
     local sql_str = sformat("create table %s (\n", t._tab_name)
     for i = 1,#field_list do
         local field_name = field_list[i]
@@ -176,6 +179,10 @@ local function create_table(t)
         else
             sql_str = sql_str .. sformat("\t`%s` %s NOT NULL DEFAULT '%s',\n", field_name, convert_type, FIELD_LUA_DEFAULT[field_type])
         end
+    end
+
+    for index_name, list in pairs(indexs_list) do
+        sql_str = sql_str .. sformat("\tINDEX `%s` (%s),\n", index_name, tconcat(list, ','))
     end
 
     sql_str = sql_str .. sformat("\tprimary key(%s)\n", tconcat(key_list,','))
@@ -194,30 +201,36 @@ local function alter_table(t, describe, index_info)
     local field_list = t._field_list
     local field_map = t._field_map
     local key_list = t._key_list
-    local key_map = {}
-    
-    for i = 1,#key_list do
-        key_map[key_list[i]] = true
-        
-    end
+    local indexs_list = t._indexs_list
 
     local key_sort_map = {}
     for i = 1,#field_list do
         key_sort_map[field_list[i]] = i
     end
 
-    local pre_key_map = {}
+    local pre_key_list = {}
+    local pre_indexs_list = {}
 
     for i = 1,#index_info do
         local info = index_info[i]
         local column_name = info.Column_name
         local key_name = info.Key_name
+        local seq_in_index = info.Seq_in_index
+        local non_unique = info.Non_unique
         if key_name == 'PRIMARY' then   --主键
-            pre_key_map[column_name] = true
+            pre_key_list[seq_in_index] = column_name
+        else
+            --普通索引
+            if non_unique == 1 then
+                if not pre_indexs_list[key_name] then
+                    pre_indexs_list[key_name] = {}
+                end
+                pre_indexs_list[key_name][seq_in_index] = column_name
+            end
         end
     end
 
-    local def = table_util.check_def_table(key_map, pre_key_map)
+    local def = table_util.check_def_table(key_list, pre_key_list)
     assert(not next(def),"can`t change keys " .. table_util.def_tostring(def))     --不能修改主键
 
     -- 不能修改字段类型
@@ -274,13 +287,59 @@ local function alter_table(t, describe, index_info)
             error("alter_table table err ")
         end
     end
+
+    --新增修改删除普通索引
+    local def = table_util.check_def_table(indexs_list, pre_indexs_list)
+    local del_index_map = {}
+    local add_index_map = {}
+    for index_name,def_info in pairs(def) do
+        if def_info._flag == 'reduce' then  --删除索引
+            del_index_map[index_name] = true
+        elseif def_info._flag == 'add' then --新增索引
+            add_index_map[index_name] = true
+        else
+            log.error("alter_table err", index_name, def_info)
+            error("alter_table can`t change index")
+        end
+    end
+
+    --删除索引
+    for index_name in pairs(del_index_map) do
+        log.warn_fmt("%s del index[%s]", t._tab_name, index_name)
+        local sql_str = sformat('DROP INDEX `%s` ON %s;', index_name, t._tab_name)
+        local ret = t._db.conn:query(sql_str)
+        if not ret then
+            log.error("alter_table del index err ",sql_str)
+            error("alter_table del index err")
+        elseif ret.err then
+            log.error("alter_table del index err ",ret,sql_str)
+            error("alter_table del index err ")
+        end
+    end
+
+    --新增索引
+    for index_name in pairs(add_index_map) do
+        local list = indexs_list[index_name]
+        local field_list_str = tconcat(list, ',')
+        log.warn_fmt("%s add index[%s] field_list(%s)", t._tab_name, index_name, field_list_str)
+        local sql_str = sformat('CREATE INDEX `%s` ON %s (%s);', index_name, t._tab_name, field_list_str)
+        local ret = t._db.conn:query(sql_str)
+        if not ret then
+            log.error("alter_table add index err ",sql_str)
+            error("alter_table add index err")
+        elseif ret.err then
+            log.error("alter_table add index err ",ret,sql_str)
+            error("alter_table add index err ")
+        end
+    end
 end
 -- 构建表
-function M:builder(tab_name, field_list, field_map, key_list)
+function M:builder(tab_name, field_list, field_map, key_list, indexs_list)
     self._tab_name = tab_name
     self._field_map = field_map
     self._key_list = key_list
     self._field_list = field_list
+    self._indexs_list = indexs_list
 
     local tab_encode = self._tab_encode
     local tab_decode = self._tab_decode
@@ -314,6 +373,8 @@ function M:builder(tab_name, field_list, field_map, key_list)
     local updates_format_end = " where("
     local updates_format_key = "("
     local delete_format_head = sformat("delete from %s",tab_name)
+    local desc_key_str = ""
+    local asc_key_str = ""
 
     local len = #field_list
     for i = 1,len do
@@ -352,12 +413,16 @@ function M:builder(tab_name, field_list, field_map, key_list)
             select_format_key_head = select_format_key_head .. '`' .. field_name .. '`'
             updates_format_end = updates_format_end .. '`' .. field_name .. '`)'
             updates_format_key = updates_format_key .. '?)'
+            desc_key_str = desc_key_str .. '`' .. field_name .. '` desc '
+            asc_key_str = asc_key_str .. '`' .. field_name .. '` asc '
         else
             select_format_end = select_format_end .. '`' .. field_name .. '`=' .. "?"
             update_format_end = update_format_end .. '`' .. field_name .. '`=' .. "? and "
             select_format_key_head = select_format_key_head .. '`' .. field_name .. '`,'
             updates_format_end = updates_format_end .. '`' .. field_name .. '`,'
             updates_format_key = updates_format_key .. '?,'
+            desc_key_str = desc_key_str .. '`' .. field_name .. '` desc,'
+            asc_key_str = asc_key_str .. '`' .. field_name .. '` asc,'
         end
        
         select_format_end_list[i] = select_format_end
@@ -451,8 +516,8 @@ function M:builder(tab_name, field_list, field_map, key_list)
         select_f_limit_k_pre_pare = new_prepare_obj(sformat("%s%s%s order by `%s` limit ?", select_format_key_head, select_format_center, select_format_end_list[len - 1], end_field_name))
     end
 
+    
     select_count_pre_pare = new_prepare_obj(count_sql)
-
     -- delete from player where key1 in (?);
     -- delete from player where key1=?,key2 in (?);
     -- delete from player where key1=?,key2=?,key3 in (?);
@@ -467,7 +532,6 @@ function M:builder(tab_name, field_list, field_map, key_list)
         end
     end
 
-    select_format_head = nil
     select_format_key_head = nil
     count_sql = nil
     select_format_end = nil
@@ -561,9 +625,6 @@ function M:builder(tab_name, field_list, field_map, key_list)
             end
         end
     end
-
-    delete_format_head = nil
-    select_format_center = nil
 
     local insert_list = {}                               
     local function entry_data_to_list(entry_data, add_list)
@@ -721,8 +782,6 @@ function M:builder(tab_name, field_list, field_map, key_list)
 
     --分页 查询
     self._select_limit = function(cursor, limit, sort, key_values, is_only_key)
-        assert(type(limit) == 'number')
-        assert(type(sort) == 'number')
         local len = #key_values
         local end_field_name = key_list[len + 1]
         local prepare_obj = nil
@@ -1112,6 +1171,280 @@ function M:builder(tab_name, field_list, field_map, key_list)
         return res_list
     end
 
+    local _idx_preparecache_map = {}
+
+    local function parse_query(query)
+        local field_values = {}
+        local field_names = {}
+        local args = {}
+        local cache_key = ""
+        if query then
+            for field_name, field_value in table_util.kvsortipairs(query) do
+                tinsert(field_names, field_name)
+                tinsert(field_values, field_value)
+                if type(field_value) ~= 'table' then
+                    tinsert(args, field_value)
+                    cache_key = cache_key .. field_name .. '-'
+                else
+                    cache_key = cache_key .. '-'
+                    if field_value['$gt'] then
+                        tinsert(args, field_value['$gt'])
+                        cache_key = cache_key .. 'g'
+                    end
+
+                    if field_value['$gte'] then
+                        tinsert(args, field_value['$gte'])
+                        cache_key = cache_key .. 'ge'
+                    end
+
+                    if field_value['$lt'] then
+                        tinsert(args, field_value['$lt'])
+                        cache_key = cache_key .. 'l'
+                    end
+
+                    if field_value['$lte'] then
+                        tinsert(args, field_value['$lte'])
+                        cache_key = cache_key .. 'le'
+                    end
+                    cache_key = cache_key .. '-'
+                end
+            end
+        end
+        return field_values, field_names, args, cache_key
+    end
+
+    local function join_query_prepare_str(field_name, field_value, prepare_str)
+        local isL = false
+        if field_value['$gt'] then
+            prepare_str = prepare_str .. sformat('`%s`>?', field_name)
+            isL = true
+        end
+
+        if field_value['$gte'] then
+            prepare_str = prepare_str .. sformat('`%s`>=?', field_name)
+            isL = true
+        end
+
+        if field_value['$lt'] then
+            if isL then
+                prepare_str = prepare_str .. sformat(' and `%s`<?', field_name)
+            else
+                prepare_str = prepare_str .. sformat('`%s`<?', field_name)
+            end
+        end
+
+        if field_value['$lte'] then
+            if isL then
+                prepare_str = prepare_str .. sformat(' and `%s`<=?', field_name)
+            else
+                prepare_str = prepare_str .. sformat('`%s`<=?', field_name)
+            end
+        end
+
+        return prepare_str
+    end
+
+    self._idx_select = function(query)
+        local field_values, field_names, args, cache_key = parse_query(query)
+        local prepare_obj = nil
+        
+        if _idx_preparecache_map[cache_key] then
+            prepare_obj = _idx_preparecache_map[cache_key]
+        else
+            local prepare_str = select_format_head .. select_format_center
+            local len = #field_names
+            for i = 1, len do
+                local field_name = field_names[i]
+                local field_value = field_values[i]
+                if type(field_value) ~= 'table' then
+                    prepare_str = prepare_str .. sformat('`%s` = ?', field_name)
+                else
+                    prepare_str = join_query_prepare_str(field_name, field_value, prepare_str)
+                end
+                if i ~= len then
+                    prepare_str = prepare_str .. ' and '
+                end
+            end
+            
+            prepare_obj = new_prepare_obj(prepare_str)
+            _idx_preparecache_map[cache_key] = prepare_obj
+        end
+
+        local isok, ret = pcall(prepare_execute, self._db, prepare_obj, tunpack(args))
+        if not isok or not ret or ret.err then
+            log.error("_idx_select err ", ret, query)
+            error("_idx_select err ")
+        end
+
+        decode_tables(ret)
+        return ret
+    end
+
+    local _idx_limit_preparecache_map = {}
+    local _idx_limit_count_prepare_cache_map = {}
+    self._idx_get_entry_by_limit = function(cursor, limit, sort, sort_field_name, query, next_offset)
+        local end_field_name = sort_field_name
+        local field_values, field_names, args, cache_key = parse_query(query)
+        local is_have_cursor = cursor and 1 or 0
+        local is_have_offset = next_offset and 1 or 0
+        cache_key = cache_key .. sformat(",%s_%s_%s_%s", sort_field_name, sort, is_have_cursor, is_have_offset)
+
+        local prepare_obj = nil
+        if _idx_limit_preparecache_map[cache_key] then
+            prepare_obj = _idx_limit_preparecache_map[cache_key]
+        else
+            local prepare_str = nil
+            local len = #field_names
+            if len > 0 or cursor then
+                prepare_str = select_format_head .. select_format_center
+            else
+                prepare_str = select_format_head
+            end
+            for i = 1, len do
+                local field_name = field_names[i]
+                local field_value = field_values[i]
+                if type(field_value) ~= 'table' then
+                    prepare_str = prepare_str .. sformat('`%s` = ?', field_name)
+                else
+                    prepare_str = join_query_prepare_str(field_name, field_value, prepare_str)
+                end
+                if i ~= len or cursor then
+                    prepare_str = prepare_str .. ' and '
+                end
+            end
+            if not cursor then
+                if sort == 1 then  --升序
+                    prepare_str = prepare_str .. sformat(' order by `%s` asc, %s limit ?', end_field_name, asc_key_str)
+                else
+                    prepare_str = prepare_str .. sformat(' order by `%s` desc, %s limit ?', end_field_name, desc_key_str)
+                end
+            else
+                if sort == 1 then  --升序
+                    prepare_str = prepare_str .. sformat('`%s` >= ? order by `%s` asc, %s limit ?', end_field_name, end_field_name, asc_key_str)
+                else
+                    prepare_str = prepare_str .. sformat('`%s` <= ? order by `%s` desc, %s limit ?', end_field_name, end_field_name, desc_key_str)
+                end
+            end
+            if next_offset then
+                prepare_str = prepare_str .. ' offset ?'
+            end
+            
+            prepare_obj = new_prepare_obj(prepare_str)
+            _idx_limit_preparecache_map[cache_key] = prepare_obj
+        end
+        
+        local count = nil
+        --拿一下count
+        if not cursor then
+            local count_prepare_obj = nil
+            if _idx_limit_count_prepare_cache_map[cache_key] then
+                count_prepare_obj = _idx_limit_count_prepare_cache_map[cache_key]
+            else
+                local count_pre_pare_str = nil
+                local len = #field_names
+                if len > 0 then
+                    count_pre_pare_str = sformat("select count(*) from %s where ", self._tab_name)
+                else
+                    count_pre_pare_str = sformat("select count(*) from %s;", self._tab_name)
+                end
+                for i = 1, len do
+                    local field_name = field_names[i]
+                    local field_value = field_values[i]
+                    if type(field_value) ~= 'table' then
+                        count_pre_pare_str = count_pre_pare_str .. sformat('`%s` = ?', field_name)
+                    else
+                        count_pre_pare_str = join_query_prepare_str(field_name, field_value, count_pre_pare_str)
+                    end
+                    if i ~= len then
+                        count_pre_pare_str = count_pre_pare_str .. ' and '
+                    end
+                end
+                count_prepare_obj = new_prepare_obj(count_pre_pare_str)
+                _idx_limit_count_prepare_cache_map[cache_key] = count_prepare_obj
+            end
+            local isok, ret = pcall(prepare_execute, self._db, count_prepare_obj, tunpack(args))
+            if not isok or not ret or ret.err then
+                log.error("_idx_get_entry_by_limit err ", ret, cursor, limit, sort, sort_field_name, query)
+                error("_idx_get_entry_by_limit err ")
+            end
+            count = ret[1]["count(*)"]
+        end
+        if cursor then
+            args[#args + 1] = cursor
+        end
+
+        args[#args + 1] = limit
+
+        if next_offset then
+            args[#args + 1] = next_offset
+        end
+
+        local isok, ret = pcall(prepare_execute, self._db, prepare_obj, tunpack(args))
+        
+        if not isok or not ret or ret.err then
+            log.error("_idx_get_entry_by_limit err ", ret, cursor, limit, sort, sort_field_name, query, next_offset)
+            error("_idx_get_entry_by_limit err ")
+        end
+        
+        local next_cursor = nil
+        local pre_offset = next_offset
+        next_offset = 0
+        if #ret > 0 then
+            local end_ret = ret[#ret]
+            next_offset = 1
+            next_cursor = end_ret[end_field_name]
+            for i = #ret - 1, 1, -1 do
+                local one_ret = ret[i]
+                if one_ret[end_field_name] == next_cursor then
+                    next_offset = next_offset + 1
+                else
+                    break
+                end
+            end
+            if cursor == next_cursor then
+                if pre_offset then
+                    next_offset = next_offset + pre_offset
+                end
+            end
+        end
+        decode_tables(ret)
+        return next_cursor, ret, count, next_offset
+    end
+    
+    local _idx_delete_preparecache_map = {}
+    self._idx_delete_entry = function(query)
+        local field_values, field_names, args, cache_key = parse_query(query)
+        local prepare_obj = nil
+        if _idx_delete_preparecache_map[cache_key] then
+            prepare_obj = _idx_delete_preparecache_map[cache_key]
+        else
+            local prepare_str = delete_format_head .. select_format_center
+            local len = #field_names
+            for i = 1, len do
+                local field_name = field_names[i]
+                local field_value = field_values[i]
+                if type(field_value) ~= 'table' then
+                    prepare_str = prepare_str .. sformat('`%s` = ?', field_name)
+                else
+                    prepare_str = join_query_prepare_str(field_name, field_value, prepare_str)
+                end
+                if i ~= len then
+                    prepare_str = prepare_str .. ' and '
+                end
+            end
+            prepare_obj = new_prepare_obj(prepare_str)
+            _idx_delete_preparecache_map[cache_key] = prepare_obj
+        end
+
+        local isok, ret = pcall(prepare_execute, self._db, prepare_obj, tunpack(args))
+        if not isok or not ret or ret.err then
+            log.error("_idx_delete_entry err ", ret, query)
+            error("_idx_delete_entry err ")
+        end
+
+        return true
+    end
+
     return self
 end
 
@@ -1178,6 +1511,21 @@ end
 --批量范围删除
 function M:batch_delete_entry_by_range(query_list)
     return self._batch_delete_by_range(query_list)
+end
+
+--通过普通索引查询
+function M:idx_get_entry(query)
+    return self._idx_select(query)
+end
+
+--通过普通索引分页查询
+function M:idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query, next_offset)
+    return self._idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query, next_offset)
+end
+
+--通过普通索引删除
+function M:idx_delete_entry(query)
+    return self._idx_delete_entry(query)
 end
 
 return M

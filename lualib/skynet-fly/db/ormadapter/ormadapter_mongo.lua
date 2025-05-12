@@ -9,6 +9,7 @@
 ---#content [ormadapter_mongo](https://github.com/huahua132/skynet_fly/blob/master/lualib/skynet-fly/db/ormadapter/ormadapter_mongo.lua)
 
 local mongof = require "skynet-fly.db.mongof"
+local table_util = require "skynet-fly.utils.table_util"
 local log = require "skynet-fly.log"
 
 local setmetatable = setmetatable
@@ -25,11 +26,12 @@ local M = {}
 local mata = {__index = M}
 
 ---#desc 新建适配器对象
----@param db_name string 对应share_config_m 中写的key为mongo表的名为db_name的连接配置
+---@param db_name? string 对应share_config_m 中写的key为mongo表的名为db_name的连接配置
+---@param db? table 可选自己传入连接对象
 ---@return table obj
-function M:new(db_name)
+function M:new(db_name, db)
     local t = {
-        _db = mongof.new_client(db_name),
+        _db = db or mongof.new_client(db_name),
         _tab_name = nil,
         _field_list = nil,
         _field_map = nil,
@@ -71,11 +73,12 @@ function M:set_batch_delete_num(num)
     return self
 end
 
-function M:builder(tab_name, field_list, field_map, key_list)
+function M:builder(tab_name, field_list, field_map, key_list, indexs_list)
     self._tab_name = tab_name
     self._field_map = field_map
     self._key_list = key_list
     self._field_list = field_list
+    self._indexs_list = indexs_list
 
     local args = {}
     local index_name = "index"
@@ -89,9 +92,24 @@ function M:builder(tab_name, field_list, field_map, key_list)
     local collect_db = self._db[tab_name]
     local res = collect_db:create_index(args)
     if res.ok ~= 1 then
-        log.error("builder err ", tab_name, res)
+        log.error("builder unique key err ", tab_name, res)
     end
-    assert(res.ok == 1, "builder err")
+    assert(res.ok == 1, "builder unique key err")
+
+    for index_name, list in pairs(indexs_list) do
+        local args = {
+            unique = false,
+            name = index_name,
+        }
+        for _,field_name in ipairs(list) do
+            tinsert(args, {[field_name] = 1})
+        end
+        local res = collect_db:create_index(args)
+        if res.ok ~= 1 then
+            log.error("builder index err ", tab_name, res)
+        end
+        assert(res.ok == 1, "builder index err")
+    end
 
     local key_len = #key_list
     --insert 创建
@@ -123,6 +141,7 @@ function M:builder(tab_name, field_list, field_map, key_list)
             if ok and isok then
                 for i = 1, #insert_list do
                     res_list[ret_index] = true
+                    entry_data_list[ret_index]._id = nil
                     ret_index = ret_index + 1
                 end
             else
@@ -133,7 +152,7 @@ function M:builder(tab_name, field_list, field_map, key_list)
                 end
             end
         end
-
+        
         return res_list
     end
 
@@ -144,6 +163,7 @@ function M:builder(tab_name, field_list, field_map, key_list)
             log.error("_insert_one doc err ", self._tab_name, err, entry_data)
             error("_insert_one err ")
         end
+        entry_data._id = nil
         return true
     end
 
@@ -234,18 +254,26 @@ function M:builder(tab_name, field_list, field_map, key_list)
             count = collect_db:find(args):count()
         end
 
+        if cursor then
+            if sort == 1 then   --升序
+                args[end_field_name] = { ['$gt'] = cursor }
+            else                --降序 
+                args[end_field_name] = { ['$lt'] = cursor }
+            end
+        end
+
         local res_list = {}
-        local ret = collect_db:find(args, only_keys):sort({[end_field_name] = sort}):skip(cursor or 0):limit(limit)
+        local ret = collect_db:find(args, only_keys):sort({[end_field_name] = sort}):limit(limit)
         while ret:has_next() do
             local entry_data = ret:next()
             entry_data._id = nil
             tinsert(res_list, entry_data)
         end
 
+        local cursor = nil
         if #res_list > 0 then
-            cursor = (cursor or 0) + limit
-        else
-            cursor = nil
+            local end_ret = res_list[#res_list]
+            cursor = end_ret[end_field_name]
         end
         
         return cursor, res_list, count
@@ -345,7 +373,7 @@ function M:builder(tab_name, field_list, field_map, key_list)
 
         local isok,err = collect_db:safe_delete(delete_query)
         if not isok then
-            log.error("delete doc err ", self._tab_name, err)
+            log.error("delete doc err ", self._tab_name, key_values, err)
             error("delete doc err")
         end
         return true
@@ -512,6 +540,77 @@ function M:builder(tab_name, field_list, field_map, key_list)
         return res_list
     end
 
+    self._idx_select = function(query)
+        local res_list = {}
+
+        local ret = collect_db:find(query)
+        while ret:has_next() do
+            local entry_data = ret:next()
+            entry_data._id = nil
+            tinsert(res_list, entry_data)
+        end
+    
+        return res_list
+    end
+
+    self._idx_get_entry_by_limit = function(cursor, limit, sort, sort_field_name, query, next_offset)
+        query = query or {}
+        local end_field_name = sort_field_name
+
+        local count = nil
+        if not cursor then
+            count = collect_db:find(query):count()
+        end
+
+        local use_query = table_util.copy(query)
+        if cursor then
+            if sort == 1 then   --升序
+                use_query[end_field_name] = { ['$gte'] = cursor }
+            else                --降序 
+                use_query[end_field_name] = { ['$lte'] = cursor }
+            end
+        end
+
+        local res_list = {}
+        local ret = collect_db:find(use_query):sort({[end_field_name] = sort}):skip(next_offset or 0):limit(limit)
+        while ret:has_next() do
+            local entry_data = ret:next()
+            entry_data._id = nil
+            tinsert(res_list, entry_data)
+        end
+
+        local next_cursor = nil
+        local pre_offset = next_offset
+        next_offset = 0
+        if #res_list > 0 then
+            local end_ret = res_list[#res_list]
+            next_offset = 1
+            next_cursor = end_ret[end_field_name]
+            for i = #res_list - 1, 1, -1 do
+                local one_ret = res_list[i]
+                if one_ret[end_field_name] == next_cursor then
+                    next_offset = next_offset + 1
+                else
+                    break
+                end
+            end
+            if cursor == next_cursor and pre_offset then
+                next_offset = next_offset + pre_offset
+            end
+        end
+
+        return next_cursor, res_list, count, next_offset
+    end
+
+    self._idx_delete_entry = function(query)
+        local isok,err = collect_db:safe_delete(query)
+        if not isok then
+            log.error("_idx_delete_entry doc err ", self._tab_name, query, err)
+            error("_idx_delete_entry doc err")
+        end
+        return true
+    end
+
     return self
 end
 
@@ -602,6 +701,21 @@ end
 --批量范围删除
 function M:batch_delete_entry_by_range(query_list)
     return self._batch_delete_by_range(query_list)
+end
+
+--通过普通索引查询
+function M:idx_get_entry(query)
+    return self._idx_select(query)
+end
+
+--通过普通索引分页查询
+function M:idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query, next_offset)
+    return self._idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query, next_offset)
+end
+
+--通过普通索引删除
+function M:idx_delete_entry(query)
+    return self._idx_delete_entry(query)
 end
 
 return M

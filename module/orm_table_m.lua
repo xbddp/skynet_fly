@@ -192,6 +192,21 @@ function g_handle.batch_delete_entry_by_range(query_list)
     return g_orm_obj:batch_delete_entry_by_range(query_list)
 end
 
+--普通索引查询
+function g_handle.idx_get_entry(query)
+    return g_orm_obj:idx_get_entry(query)
+end
+
+--普通索引分页查询
+function g_handle.idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query)
+    return g_orm_obj:idx_get_entry_by_limit(cursor, limit, sort, sort_field_name, query)
+end
+
+--普通索引删除
+function g_handle.idx_delete_entry(query)
+    return g_orm_obj:idx_delete_entry(query)
+end
+
 local CMD = {}
 
 function CMD.start(config)
@@ -225,13 +240,15 @@ end
 
 function CMD.herald_exit()
     G_ISCLOSE = true
-
-    queue(g_orm_obj.save_change_now,g_orm_obj)
+    if g_orm_obj then
+        queue(g_orm_obj.save_change_now,g_orm_obj)
+    end
 end
 
 function CMD.exit()
-
-    queue(g_orm_obj.save_change_now,g_orm_obj)
+    if g_orm_obj then
+        queue(g_orm_obj.save_change_now,g_orm_obj)
+    end
     return true
 end
 
