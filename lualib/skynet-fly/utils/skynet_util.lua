@@ -11,6 +11,7 @@ local skynet = require "skynet"
 local module_info = require "skynet-fly.etc.module_info"
 local log = require "skynet-fly.log"
 local table_util = require "skynet-fly.utils.table_util"
+local guid_util = require "skynet-fly.utils.guid_util"
 local json = require "cjson"
 
 local debug_getinfo = debug.getinfo
@@ -78,7 +79,7 @@ function M.lua_src_dispatch(cmd_func)
     skynet.dispatch('lua',function(session,source,cmd,...)
         local f = cmd_func[cmd]
         assert(f,'cmd no found :'..cmd .. ' from : ' .. source)
-        
+
         if session == 0 then
             f(source, ...)
         else
@@ -118,6 +119,16 @@ old_skynet_info_func(function()
 
     return json.encode(info)
 end)
+
+--重写方法
+function skynet.create_lua_trace()
+	return guid_util.fly_guid()
+end
+
+--重写方法
+function skynet.queue_tag_create()
+    return guid_util.fly_guid()
+end
 
 ---#desc 注册info_name信息的生成函数
 ---@param info_name string 名称
