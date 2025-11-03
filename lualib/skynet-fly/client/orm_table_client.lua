@@ -11,26 +11,30 @@
 ---#content 因为orm有缓存的情况下，只能一个服务持有，那么我们又想多个服务访问情况下，我们一般把ormtable挂靠在orm_table_m可热更服务中
 ---#content 这时候我们通过orm_table_client来访问
 
-local contriner_client = require "skynet-fly.client.contriner_client"
+local container_client = require "skynet-fly.client.container_client"
 local skynet = require "skynet"
 local table_util = require "skynet-fly.utils.table_util"
+
 local setmetatable = setmetatable
 local tpack = table.pack
 local tunpack = table.unpack
+local rawget = rawget
 local assert = assert
 local error = error
 
 
-contriner_client:register("orm_table_m")
-contriner_client:set_always_swtich("orm_table_m")   --一直会切换访问新服务
+container_client:register("orm_table_m")
+container_client:set_always_swtich("orm_table_m")   --一直会切换访问新服务
 
 local g_instance_map = {}
 
 local M = {}
 
 local mt = {__index = function(t,k)
-    t[k] = function(self,...)
-        t._client = t._client or contriner_client:new("orm_table_m",t._orm_name)
+    local f = rawget(t, k)
+    if f then return f end
+    f = function(self, ...)
+        t._client = t._client or container_client:new("orm_table_m",t._orm_name)
         local ret = nil
         --尝试 100 次，还不成功，那肯定是数据库挂逼了或者热更后执行保存比较耗时
         for i = 1,100 do
@@ -44,7 +48,8 @@ local mt = {__index = function(t,k)
         
         error("call err " .. k .. ' ' .. table_util.dump({...}))
     end
-    return t[k]
+    t[k] = f
+    return f
 end}
 
 ---#desc 创建一个orm访问对象

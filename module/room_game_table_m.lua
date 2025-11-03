@@ -1,10 +1,10 @@
 local log = require "skynet-fly.log"
 local skynet = require "skynet"
 local timer = require "skynet-fly.timer"
-local contriner_client = require "skynet-fly.client.contriner_client"
+local container_client = require "skynet-fly.client.container_client"
 local skynet_util = require "skynet-fly.utils.skynet_util"
 local table_util = require "skynet-fly.utils.table_util"
-contriner_client:register("share_config_m")
+container_client:register("share_config_m")
 
 local assert = assert
 local next = next
@@ -52,16 +52,17 @@ local function kick_out_all(table_id, reason)
 	end
 	local t_info = g_table_map[table_id]
 	local player_map = t_info.player_map
-
+	local ok = true
 	for player_id,player in pairs(player_map) do
 		if player_map[player_id] then
 			local isok,err,errmsg = skynet.call(player.hall_server_id,'lua','leave_table',player_id, reason)
 			if not isok then
+				ok = false
 				log.warn("kick_player err ",player_id,err,errmsg)
 			end
 		end
 	end
-	return true
+	return ok
 end
 
 --踢出单个玩家
@@ -216,7 +217,7 @@ local function rpc_push_by_player_list(table_id, player_list, header, msgbody)
 	end
 	
 	local player_map = t_info.player_map
-
+	local body = table_plug.rpc_pack.pack_push(msgbody)
 	local gate_list = {}
 	local fd_list = {}
 
@@ -242,8 +243,6 @@ local function rpc_push_by_player_list(table_id, player_list, header, msgbody)
 		end
 	end
 
-	local body = table_plug.rpc_pack.pack_push(msgbody)
-
 	if #gate_list > 0 then
 		table_plug.broadcast(gate_list, fd_list, header, body)
 	end
@@ -262,7 +261,7 @@ local function rpc_push_broad_cast(table_id, header, msgbody, filter_map)
 
 	local t_info = g_table_map[table_id]
 	local player_map = t_info.player_map
-
+	local body = table_plug.rpc_pack.pack_push(msgbody)
 	local gate_list = {}
 	local fd_list = {}
 
@@ -284,8 +283,6 @@ local function rpc_push_broad_cast(table_id, header, msgbody, filter_map)
 			end
 		end
 	end
-
-	local body = table_plug.rpc_pack.pack_push(msgbody)
 
 	if #gate_list > 0 then
 		table_plug.broadcast(gate_list, fd_list, header, body)
@@ -319,6 +316,10 @@ end
 --踢出单个玩家
 function interface:kick_player(player_id, reason)
 	return kick_player(self.table_id, player_id, reason)
+end
+--销毁房间
+function interface:dismisstable()
+	return self:call_alloc("dismisstable", self.table_id)
 end
 --给玩家发消息
 function interface:send_msg(player_id,header,body)
@@ -433,6 +434,11 @@ function CMD.enter(table_id, player_id, gate, fd, is_ws, addr, hall_server_id)
 
 	assert(not player_map[player_id])
 
+	local isok,errcode,errmsg = t_info.game_table.enter(player_id)
+	if not isok then
+		return isok,errcode,errmsg
+	end
+
 	player_map[player_id] = {
 		player_id = player_id,
 		fd = fd,
@@ -441,11 +447,6 @@ function CMD.enter(table_id, player_id, gate, fd, is_ws, addr, hall_server_id)
 		is_ws = is_ws,
 		addr = addr,
 	}
-
-	local isok,errcode,errmsg = t_info.game_table.enter(player_id)
-	if not isok then
-		return isok,errcode,errmsg
-	end
 
 	return true
 end
@@ -477,7 +478,9 @@ function CMD.dismisstable(table_id)
 	if next(player_map) then  --还有玩家
 		return false
 	end
-
+	if t_info.game_table.destroy then
+		t_info.game_table.destroy()
+	end
 	g_table_map[table_id] = nil
 	return true
 end
@@ -556,7 +559,7 @@ function CMD.start(config)
 	assert(table_plug.table_creator,"not table_creator")          --桌子建造者
 
 	skynet.fork(function()
-		local confclient = contriner_client:new("share_config_m")
+		local confclient = container_client:new("share_config_m")
 		local room_game_login = confclient:mod_call('query','room_game_login')
 
 		if room_game_login.gateconf then

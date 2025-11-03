@@ -66,7 +66,7 @@ end
 
 local function launch_new_module(module_name, config)
 	local launch_num = config.launch_num
-	local is_record_on = config.is_record_on		--是否写录像
+	local is_record_on = config.is_record_on or 0	--是否写录像
 	local auto_reload = config.auto_reload		 	--自动热更机制
 	local record_backup = config.record_backup      --录像文件整理
 	local mod_args = config.mod_args or {}
@@ -318,9 +318,15 @@ end
 
 local function hotfix(module_map)
 	local ret_map = {}
-	for module_name,hotfix_mods in pairs(module_map) do
-		ret_map[module_name] = call_module(module_name, 'hotfix', hotfix_mods) or "not exists"
+	for module_name in pairs(g_name_id_list_map) do
+		local hotfix_mods = module_map[module_name]
+		if hotfix_mods then
+			ret_map[module_name] = call_module(module_name, 'hotfix', hotfix_mods) or "not exists"
+		else
+			ret_map[module_name] = call_module(module_name, 'hotfix', "") or "not exists"
+		end
 	end
+	
 	local ret = json.encode(ret_map)
 	return ret
 end
@@ -384,8 +390,10 @@ function CMD.hotfix(source, ...)
 	local module_map = {}
 	for i = 1, #module_names, 2 do
 		local module_name = module_names[i]
-		local hotfix_mods = module_names[i + 1] or ""
-		module_map[module_name] = hotfix_mods
+		if module_name ~= "update_config" then
+			local hotfix_mods = module_names[i + 1] or ""
+			module_map[module_name] = hotfix_mods
+		end
 	end
 	return queue(hotfix, module_map)
 end
@@ -432,6 +440,6 @@ function CMD.shutdown()
 end
 
 skynet.start(function()
-	skynet.register('.contriner_mgr')
+	skynet.register('.container_mgr')
 	skynet_util.lua_dispatch(CMD)
 end)

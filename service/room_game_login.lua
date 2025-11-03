@@ -3,7 +3,7 @@ local skynet = require "skynet.manager"
 local timer = require "skynet-fly.timer"
 local log = require "skynet-fly.log"
 local queue = require "skynet.queue"
-local contriner_client = require "skynet-fly.client.contriner_client"
+local container_client = require "skynet-fly.client.container_client"
 local skynet_util = require "skynet-fly.utils.skynet_util"
 
 local assert = assert
@@ -11,7 +11,7 @@ local x_pcall = x_pcall
 local pairs = pairs
 local tinsert = table.insert
 
-contriner_client:register("share_config_m","room_game_hall_m")
+container_client:register("share_config_m","room_game_hall_m")
 
 local login_plug = nil
 local SELF_ADDRESS = nil
@@ -41,7 +41,7 @@ local function jump_one_player(agent)
 	local ret, errno, errmsg = hall_client:mod_call("jump_exit", player_id)					--从旧服务中跳出
 	log.warn_fmt("jump_exits server_id[%s] gate[%s] fd[%s] is_ws[%s] player_id[%s] ret[%s] errno[%s] errmsg[%s]", skynet.address(server_id), agent.gate, agent.fd, agent.is_ws, player_id, ret, errno, errmsg)
 	if ret then																				--成功
-		local new_hall_client = contriner_client:new("room_game_hall_m", nil, NOT_SWITCH_FUNC)
+		local new_hall_client = container_client:new("room_game_hall_m", nil, NOT_SWITCH_FUNC)
 		new_hall_client:set_mod_num(player_id)
 		local server_id = new_hall_client:get_mod_server_id()
 		ret,errno,errmsg = new_hall_client:mod_call("jump_join", agent.gate, agent.fd, agent.is_ws, agent.addr, player_id, SELF_ADDRESS)	--跳入新服务
@@ -56,7 +56,7 @@ local function jump_one_player(agent)
 	end
 end
 
-contriner_client:add_updated_cb("room_game_hall_m", function()
+container_client:add_updated_cb("room_game_hall_m", function()
 	if not login_plug.is_jump_new then return end
 	if g_isjumping then return end
 
@@ -110,7 +110,7 @@ local function connect_hall(gate, fd, is_ws, addr, player_id, header, rsp_sessio
 		end
 		close_fd(old_agent.fd)
 	else
-		hall_client = contriner_client:new("room_game_hall_m", nil, NOT_SWITCH_FUNC)
+		hall_client = container_client:new("room_game_hall_m", nil, NOT_SWITCH_FUNC)
 		hall_client:set_mod_num(player_id)
 	end
 	
@@ -354,6 +354,10 @@ function interface:rpc_push_msg(player_id, header, msgbody)
 	end
 	local agent = g_player_map[player_id]
 	local body = login_plug.rpc_pack.pack_push(msgbody)
+	if not interface:is_online(player_id) then
+		log.info("rpc_push_msg not online ", player_id, header)
+		return
+	end
 	send_msg(agent, header, body)
 end
 
@@ -366,11 +370,16 @@ function interface:rpc_push_msg_byfd(fd, header, msgbody)
 	end
 
 	local body = login_plug.rpc_pack.pack_push(msgbody)
+	if not agent then
+		log.info("rpc_push_msg_byfd fd not exists ", fd, header)
+		return
+	end
 	send_msg(agent, header, body)
 end
 
 --rpc推送消息给部分玩家
 function interface:rpc_push_by_player_list(player_list, header, msgbody)
+	local body = login_plug.rpc_pack.pack_push(msgbody)
 	local gate_list = {}
 	local fd_list = {}
 
@@ -396,7 +405,7 @@ function interface:rpc_push_by_player_list(player_list, header, msgbody)
 			end
 		end
 	end
-	local body = login_plug.rpc_pack.pack_push(msgbody)
+
 	if #gate_list > 0 then
 		login_plug.broadcast(gate_list, fd_list, header, body)
 	end
@@ -409,7 +418,7 @@ end
 --rpc推送消息给全部玩家
 function interface:rpc_push_broad_cast(header, msgbody, filter_map)
 	filter_map = filter_map or EMPTY
-
+	local body = login_plug.rpc_pack.pack_push(msgbody)
 	local gate_list = {}
 	local fd_list = {}
 
@@ -431,7 +440,7 @@ function interface:rpc_push_broad_cast(header, msgbody, filter_map)
 			end
 		end
 	end
-	local body = login_plug.rpc_pack.pack_push(msgbody)
+	
 	if #gate_list > 0 then
 		login_plug.broadcast(gate_list, fd_list, header, body)
 	end
@@ -529,7 +538,7 @@ function CMD.send_player_hall(player_id, ...)
 		agent.queue(send_player_hall, agent, ...)
 	else
 		--不在线就发到最新的hall服务上
-		contriner_client:instance("room_game_hall_m"):set_mod_num(player_id):mod_send(...)
+		container_client:instance("room_game_hall_m"):set_mod_num(player_id):mod_send(...)
 	end
 end
 
@@ -546,7 +555,7 @@ function CMD.call_player_hall(player_id, ...)
 		return agent.queue(call_player_hall, agent, ...)
 	else
 		--不在线就发到最新的hall服务上
-		return contriner_client:instance("room_game_hall_m"):set_mod_num(player_id):mod_call(...)
+		return container_client:instance("room_game_hall_m"):set_mod_num(player_id):mod_call(...)
 	end
 end
 
@@ -554,7 +563,7 @@ skynet.start(function()
 	SELF_ADDRESS = skynet.self()
 	skynet_util.lua_dispatch(CMD)
 
-	local confclient = contriner_client:new("share_config_m")
+	local confclient = container_client:new("share_config_m")
 	local room_game_login = confclient:mod_call('query','room_game_login')
 
 	assert(room_game_login.gateconf or room_game_login.wsgateconf,"not gateconf or wsgateconf")

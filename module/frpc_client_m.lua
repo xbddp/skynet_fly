@@ -17,7 +17,7 @@ local string_util = require "skynet-fly.utils.string_util"
 local watch_server = require "skynet-fly.rpc.watch_server"
 local SYSCMD = require "skynet-fly.enum.SYSCMD"
 local WATCH_SYN_RET = require "skynet-fly.enum.WATCH_SYN_RET"
-local contriner_interface = require "skynet-fly.contriner.contriner_interface"
+local container_interface = require "skynet-fly.container.container_interface"
 local SERVER_STATE_TYPE = require "skynet-fly.enum.SERVER_STATE_TYPE"
 local FRPC_ERRCODE = require "skynet-fly.enum.FRPC_ERRCODE"
 local queue = require "skynet.queue"()
@@ -561,7 +561,7 @@ local function add_node_watch(cluster_name)
 	end)
 end
 
-contriner_interface.hook_fix_exit_after(function()
+container_interface.hook_fix_exit_after(function()
 	for svr_name, node_info in pairs(g_node_info_map) do
 		local watch_syn_map = node_info.watch_syn_map
 		for cluster_name, watch_syn_info in pairs(watch_syn_map) do
@@ -700,10 +700,10 @@ local function crypt_msg(secret, msg, sz)
 end
 
 --轮询给单个集群结点发
-function CMD.balance_send(svr_name, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.send_one(svr_name, _, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel, _, secret = get_balance_channel(svr_name)
 	if not channel then
-		log.error("frpc balance_send not connect ", svr_name, module_name, skynet.unpack(msg, sz))
+		log.error("frpc send_one not connect ", svr_name, module_name, skynet.unpack(msg, sz))
 		skynet.trash(msg, sz)
 		return
 	end
@@ -715,7 +715,7 @@ function CMD.balance_send(svr_name, module_name, instance_name, packid, mod_num,
 end
 
 --轮询给单个集群结点发
-function CMD.balance_call(svr_name, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.call_one(svr_name, _, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel, cluster_name, secret = get_balance_channel(svr_name)
 	if not channel then
 		skynet.trash(msg, sz)
@@ -736,7 +736,7 @@ function CMD.balance_call(svr_name, module_name, instance_name, packid, mod_num,
 end
 
 --指定结点id发
-function CMD.send_by_id(svr_name, svr_id, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.send_byid(svr_name, svr_id, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel, _, secret = get_svr_id_channel(svr_name, svr_id)
 	if not channel then
 		log.error("frpc send_by_id not connect ", svr_name, svr_id, module_name, skynet.unpack(msg, sz))
@@ -751,7 +751,7 @@ function CMD.send_by_id(svr_name, svr_id, module_name, instance_name, packid, mo
 end
 
 --指定结点id发
-function CMD.call_by_id(svr_name, svr_id, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.call_byid(svr_name, svr_id, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel, cluster_name, secret = get_svr_id_channel(svr_name, svr_id)
 	if not channel then
 		skynet.trash(msg, sz)
@@ -772,7 +772,7 @@ function CMD.call_by_id(svr_name, svr_id, module_name, instance_name, packid, mo
 end
 
 --给集群所有结点发
-function CMD.send_all(svr_name, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.send_all(svr_name, _, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel_map, secret_map = get_svr_name_all_channel(svr_name)
 	if not channel_map then
 		log.error("frpc send_all not connect ", svr_name, module_name, skynet.unpack(msg, sz))
@@ -806,7 +806,7 @@ function CMD.send_all(svr_name, module_name, instance_name, packid, mod_num, msg
 end
 
 --给集群所有结点发
-function CMD.call_all(svr_name, module_name, instance_name, packid, mod_num, msg, sz)
+function CMD.call_all(svr_name, _, module_name, instance_name, packid, mod_num, msg, sz)
 	local channel_map, secret_map = get_svr_name_all_channel(svr_name)
 	if not channel_map then
 		skynet.trash(msg, sz)
@@ -839,7 +839,7 @@ function CMD.call_all(svr_name, module_name, instance_name, packid, mod_num, msg
 			cluster_rsp_map[cluster_name] = rsp
 		end
 	end
-	return cluster_rsp_map, secret_map
+	return true, cluster_rsp_map, secret_map
 end
 
 --订阅
@@ -884,7 +884,7 @@ function CMD.unsub(svr_name, svr_id, source, channel_name, unique_name)
 end
 
 local function subsyn(svr_name, svr_id, source, channel_name, version)
-	if contriner_interface.get_server_state == SERVER_STATE_TYPE.fix_exited then
+	if container_interface.get_server_state == SERVER_STATE_TYPE.fix_exited then
 		return WATCH_SYN_RET.move
 	end
 	local channel, cluster_name, secret, watch_syn_info = get_watch_channel(svr_name, svr_id)
@@ -974,7 +974,7 @@ function CMD.unsubsyn(svr_name, svr_id, source, channel_name)
 end
 
 local function psubsyn(svr_name, svr_id, source, pchannel_name, version)
-	if contriner_interface.get_server_state == SERVER_STATE_TYPE.fix_exited then
+	if container_interface.get_server_state == SERVER_STATE_TYPE.fix_exited then
 		return WATCH_SYN_RET.move
 	end
 	local channel, cluster_name, secret, _, pwatch_syn_info = get_watch_channel(svr_name, svr_id)

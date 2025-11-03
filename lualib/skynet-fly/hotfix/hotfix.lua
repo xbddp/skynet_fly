@@ -1,9 +1,10 @@
-local contriner_interface = require "skynet-fly.contriner.contriner_interface"
+local container_interface = require "skynet-fly.container.container_interface"
 local SERVER_STATE_TYPE = require "skynet-fly.enum.SERVER_STATE_TYPE"
 local log = require "skynet-fly.log"
 local string_util = require "skynet-fly.utils.string_util"
 local file_util = require "skynet-fly.utils.file_util"
 local time_util = require "skynet-fly.utils.time_util"
+local sharedata = require "skynet-fly.sharedata"
 local module_info = require "skynet-fly.etc.module_info"
 local skynet = require "skynet"
 
@@ -81,7 +82,7 @@ function M.require(name)
     end
     assert(not string.find(name, 'skynet-fly.hotfix.state_data'), "can`t hotfix file")      --存储状态数据的文件不能热更
 
-    assert(contriner_interface:get_server_state() == SERVER_STATE_TYPE.loading)     --必须load阶段require，否则不好记录文件修改时间
+    assert(container_interface:get_server_state() == SERVER_STATE_TYPE.loading)     --必须load阶段require，否则不好记录文件修改时间
 	local package = g_tb.package
     local f_path = package.searchpath(name, package.path)
     assert(f_path, "hot_require err can`t find module = " .. name)
@@ -96,6 +97,8 @@ end
 
 --热更
 function M.hotfix(hotfixmods)
+    local hot_ret = {}
+    sharedata.hotfix_all(hot_ret)
     local base_info = module_info.get_base_info()
     local patch_dir
     local cur_time = time_util.time()
@@ -103,7 +106,6 @@ function M.hotfix(hotfixmods)
         patch_dir = get_patch_dir(cur_time)
     end
 
-    local hot_ret = {}
     local name_list = string_util.split(hotfixmods, ':::')
     local sort_list = {}
     for _,name in ipairs(name_list) do

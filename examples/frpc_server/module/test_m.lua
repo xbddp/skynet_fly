@@ -1,13 +1,16 @@
 ---@diagnostic disable: undefined-field, need-check-nil
 local log = require "skynet-fly.log"
 local skynet = require "skynet.manager"
-local contriner_client = require "skynet-fly.client.contriner_client"
+local container_client = require "skynet-fly.client.container_client"
 local watch_server = require "skynet-fly.rpc.watch_server"
 local module_info = require "skynet-fly.etc.module_info"
 local env_util = require "skynet-fly.utils.env_util"
+local orm_table_client = require "skynet-fly.client.orm_table_client"
 
-contriner_client:register("share_config_m")
+container_client:register("share_config_m")
 local string = string
+
+local g_player_entity = orm_table_client:new("player")
 
 local g_config = nil
 local g_host_conf = nil
@@ -20,7 +23,7 @@ end
 
 function CMD.ping(msg)
 	if not g_host_conf then
-		local confclient = contriner_client:new("share_config_m")
+		local confclient = container_client:new("share_config_m")
 		g_host_conf = confclient:mod_call('query','frpc_server')
 	end
 	
@@ -95,6 +98,8 @@ function CMD.start(config)
 				watch_server.pubsyn("name:age1:address2", "hello name:age1:address2", i)
 				skynet.sleep(500)
 				i = i + 1
+
+				--g_player_entity:change_save_one_entry({player_id = 10001, sex = i})
 			end
 		end)
 	end
